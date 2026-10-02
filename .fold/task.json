@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1.0",
+  "title": "Prove inspectable collaboration-state compression",
+  "scope": [
+    ".fold",
+    "README.md",
+    "pyproject.toml",
+    "src",
+    "tests"
+  ],
+  "tests": [
+    "python -m pytest"
+  ]
+}
