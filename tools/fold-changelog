@@ -1,0 +1,420 @@
+#!/usr/bin/env python3
+"""Record or verify post-publication Fold roadmap changes.
+
+Roadmap 1.0 with a header-only changelog is the publication baseline. Every
+later roadmap version requires one canonical changelog entry. Entries are
+unique, strictly newest-first, and use the closed amendment taxonomy.
+
+Exit codes:
+  0  success
+  2  usage error
+  3  roadmap missing, unsafe, or invalid
+  4  changelog missing, unsafe, or invalid
+  5  valid artifacts conflict
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, TextIO
+
+EXIT_SUCCESS = 0
+EXIT_USAGE = 2
+EXIT_ROADMAP = 3
+EXIT_CHANGELOG = 4
+EXIT_CONFLICT = 5
+FIRST_PUBLISHED_VERSION = "1.0"
+CHANGELOG_HEADER = "# Roadmap Changelog\n"
+
+VERSION_VALUE = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+ROADMAP_VERSION_RE = re.compile(
+    rf"^\*\*Roadmap version:\*\*[ \t]+({VERSION_VALUE})[ \t]*$", re.MULTILINE
+)
+ENTRY_HEADING_RE = re.compile(rf"^## Roadmap ({VERSION_VALUE})$", re.MULTILINE)
+CATEGORIES: dict[str, str] = {
+    "correction": "Correction",
+    "promotion": "Promotion",
+    "demotion": "Demotion",
+    "restructuring": "Restructuring",
+    "invariant-change": "Invariant change",
+}
+CATEGORY_VALUES = frozenset(CATEGORIES.values())
+
+
+class RoadmapError(RuntimeError):
+    pass
+
+
+class ChangelogError(RuntimeError):
+    pass
+
+
+class ConflictError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True, order=True)
+class Version:
+    major: int
+    minor: int
+
+    @classmethod
+    def parse(cls, value: str) -> "Version":
+        if re.fullmatch(VERSION_VALUE, value) is None:
+            raise ValueError(f"invalid roadmap version {value!r}; expected MAJOR.MINOR")
+        major, minor = value.split(".")
+        return cls(int(major), int(minor))
+
+    def __str__(self) -> str:
+        return f"{self.major}.{self.minor}"
+
+
+@dataclass(frozen=True)
+class Entry:
+    version: Version
+    category: str
+    rationale: str
+    effect: str
+    reacceptance: str | None = None
+
+    def validate(self) -> None:
+        if self.category not in CATEGORY_VALUES:
+            raise ChangelogError(f"unknown amendment category: {self.category!r}")
+        _canonical_line(self.rationale, "rationale", ChangelogError)
+        _canonical_line(self.effect, "effect on released contracts", ChangelogError)
+        if self.category == "Invariant change":
+            if self.reacceptance is None:
+                raise ChangelogError("invariant change requires re-acceptance")
+            _canonical_line(self.reacceptance, "re-acceptance", ChangelogError)
+        elif self.reacceptance is not None:
+            raise ChangelogError(
+                "re-acceptance is valid only for category 'Invariant change'"
+            )
+
+    def render(self) -> str:
+        self.validate()
+        lines = [
+            f"## Roadmap {self.version}",
+            "",
+            f"**Category:** {self.category}",
+            "",
+            f"**Rationale:** {self.rationale}",
+            "",
+            f"**Effect on released contracts:** {self.effect}",
+        ]
+        if self.reacceptance is not None:
+            lines.extend(("", f"**Re-acceptance:** {self.reacceptance}"))
+        return "\n".join(lines) + "\n"
+
+
+@dataclass(frozen=True)
+class Changelog:
+    entries: tuple[Entry, ...]
+
+    @classmethod
+    def parse(cls, text: str) -> "Changelog":
+        if text == CHANGELOG_HEADER:
+            return cls(())
+        if not text.startswith(CHANGELOG_HEADER + "\n"):
+            raise ChangelogError("changelog must start with the canonical header")
+        body = text[len(CHANGELOG_HEADER) + 1 :]
+        starts = list(ENTRY_HEADING_RE.finditer(body))
+        if not starts or starts[0].start() != 0:
+            raise ChangelogError("changelog contains text outside canonical entries")
+        entries: list[Entry] = []
+        for index, match in enumerate(starts):
+            end = starts[index + 1].start() - 1 if index + 1 < len(starts) else len(body)
+            block = body[match.start() : end]
+            entry = _parse_entry(block)
+            if block != entry.render():
+                raise ChangelogError(
+                    f"roadmap {entry.version} entry is not canonically serialized"
+                )
+            entries.append(entry)
+        versions = [entry.version for entry in entries]
+        if len(versions) != len(set(versions)):
+            raise ChangelogError("changelog contains duplicate roadmap versions")
+        if any(left <= right for left, right in zip(versions, versions[1:])):
+            raise ChangelogError("changelog versions must be strictly descending")
+        return cls(tuple(entries))
+
+    def render(self) -> str:
+        if not self.entries:
+            return CHANGELOG_HEADER
+        return CHANGELOG_HEADER + "\n" + "\n".join(
+            entry.render() for entry in self.entries
+        )
+
+    def add(self, entry: Entry) -> "Changelog":
+        entry.validate()
+        for existing in self.entries:
+            if existing.version == entry.version:
+                if existing == entry:
+                    return self
+                raise ConflictError(
+                    f"roadmap {entry.version} is already recorded differently"
+                )
+        if self.entries and entry.version <= self.entries[0].version:
+            raise ConflictError(
+                f"roadmap {entry.version} is not newer than recorded "
+                f"roadmap {self.entries[0].version}"
+            )
+        return Changelog((entry, *self.entries))
+
+
+def _canonical_line(value: str, name: str, error_type: type[Exception]) -> str:
+    if not value or value != value.strip():
+        raise error_type(f"{name} must be non-empty canonical single-line text")
+    if "\n" in value or "\r" in value:
+        raise error_type(f"{name} must be single-line text")
+    if any(ord(character) < 0x20 and character != "\t" for character in value):
+        raise error_type(f"{name} contains a control character")
+    return value
+
+
+def _parse_entry(block: str) -> Entry:
+    lines = block.splitlines()
+    if len(lines) not in (7, 9):
+        raise ChangelogError("changelog entry has an invalid canonical shape")
+    expected_blank = (1, 3, 5) if len(lines) == 7 else (1, 3, 5, 7)
+    if any(lines[index] != "" for index in expected_blank):
+        raise ChangelogError("changelog entry has invalid spacing")
+    heading = ENTRY_HEADING_RE.fullmatch(lines[0])
+    if heading is None:
+        raise ChangelogError("changelog entry has an invalid heading")
+    fields = (
+        (lines[2], "**Category:** "),
+        (lines[4], "**Rationale:** "),
+        (lines[6], "**Effect on released contracts:** "),
+    )
+    values: list[str] = []
+    for line, prefix in fields:
+        if not line.startswith(prefix):
+            raise ChangelogError(f"changelog entry is missing {prefix.rstrip()}")
+        values.append(line[len(prefix) :])
+    reacceptance = None
+    if len(lines) == 9:
+        prefix = "**Re-acceptance:** "
+        if not lines[8].startswith(prefix):
+            raise ChangelogError("changelog entry has an unexpected field")
+        reacceptance = lines[8][len(prefix) :]
+    try:
+        version = Version.parse(heading.group(1))
+    except ValueError as exc:
+        raise ChangelogError(str(exc)) from exc
+    entry = Entry(version, values[0], values[1], values[2], reacceptance)
+    entry.validate()
+    return entry
+
+
+def _read_lf_utf8(path: Path, description: str, error_type: type[Exception]) -> str:
+    try:
+        if path.is_symlink():
+            raise error_type(f"refusing {description} symlink: {path}")
+        if not path.is_file():
+            raise error_type(f"{description} not found: {path}")
+        raw = path.read_bytes()
+    except error_type:
+        raise
+    except OSError as exc:
+        raise error_type(f"cannot inspect or read {description}: {exc}") from exc
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raise error_type(f"{description} has a UTF-8 BOM: {path}")
+    if b"\r" in raw:
+        raise error_type(f"{description} contains CR bytes: {path}")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise error_type(f"{description} is not UTF-8: {exc}") from exc
+
+
+def read_roadmap_version(path: Path) -> Version:
+    text = _read_lf_utf8(path, "roadmap", RoadmapError)
+    matches = ROADMAP_VERSION_RE.findall(text)
+    if len(matches) != 1:
+        raise RoadmapError("roadmap must contain exactly one valid version header")
+    return Version.parse(matches[0])
+
+
+def read_changelog(path: Path) -> Changelog:
+    return Changelog.parse(_read_lf_utf8(path, "changelog", ChangelogError))
+
+
+def atomic_write(path: Path, data: bytes) -> None:
+    try:
+        if path.is_symlink():
+            raise ChangelogError(f"refusing changelog symlink: {path}")
+        parent = path.parent
+        if parent.is_symlink():
+            raise ChangelogError(f"refusing changelog parent symlink: {parent}")
+        if not parent.is_dir():
+            raise ChangelogError(f"changelog parent is not a directory: {parent}")
+        mode = path.stat().st_mode & 0o777 if path.exists() else None
+        fd, temporary = tempfile.mkstemp(prefix=path.name + ".tmp.", dir=parent)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if mode is not None:
+                os.chmod(temporary, mode)
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+    except ChangelogError:
+        raise
+    except OSError as exc:
+        raise ChangelogError(f"cannot atomically write changelog: {exc}") from exc
+
+
+def build_entry(args: argparse.Namespace) -> Entry:
+    try:
+        version = Version.parse(args.version)
+        rationale = _canonical_line(args.rationale, "--rationale", ValueError)
+        effect = _canonical_line(args.effect, "--effect", ValueError)
+        reacceptance = args.reacceptance
+        if reacceptance is not None:
+            reacceptance = _canonical_line(
+                reacceptance, "--reacceptance", ValueError
+            )
+    except ValueError:
+        raise
+    if args.category == "invariant-change" and reacceptance is None:
+        raise ValueError("invariant-change requires --reacceptance")
+    if args.category != "invariant-change" and reacceptance is not None:
+        raise ValueError("--reacceptance is valid only for invariant-change")
+    return Entry(version, CATEGORIES[args.category], rationale, effect, reacceptance)
+
+
+def command_add(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) -> int:
+    try:
+        roadmap_version = read_roadmap_version(args.roadmap)
+    except (RoadmapError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=stderr)
+        return EXIT_ROADMAP
+    try:
+        entry = build_entry(args)
+    except ValueError as exc:
+        print(f"USAGE ERROR: {exc}", file=stderr)
+        return EXIT_USAGE
+    if entry.version != roadmap_version:
+        print(
+            f"ERROR: roadmap version is {roadmap_version}, "
+            f"but --version is {entry.version}",
+            file=stderr,
+        )
+        return EXIT_CONFLICT
+    if entry.version == Version.parse(FIRST_PUBLISHED_VERSION):
+        print(
+            "ERROR: roadmap 1.0 is the publication baseline, not a changelog entry",
+            file=stderr,
+        )
+        return EXIT_CONFLICT
+    try:
+        changelog = read_changelog(args.changelog)
+        updated = changelog.add(entry)
+    except ChangelogError as exc:
+        print(f"ERROR: {exc}", file=stderr)
+        return EXIT_CHANGELOG
+    except ConflictError as exc:
+        print(f"ERROR: {exc}", file=stderr)
+        return EXIT_CONFLICT
+    if updated == changelog:
+        print(f"no change: roadmap {entry.version} already recorded", file=stdout)
+        return EXIT_SUCCESS
+    rendered = updated.render()
+    if args.dry_run:
+        stdout.write(rendered)
+        return EXIT_SUCCESS
+    try:
+        atomic_write(args.changelog, rendered.encode("utf-8"))
+    except ChangelogError as exc:
+        print(f"ERROR: {exc}", file=stderr)
+        return EXIT_CHANGELOG
+    print(f"recorded roadmap {entry.version} ({entry.category})", file=stdout)
+    return EXIT_SUCCESS
+
+
+def command_verify(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) -> int:
+    try:
+        roadmap_version = read_roadmap_version(args.roadmap)
+    except (RoadmapError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=stderr)
+        return EXIT_ROADMAP
+    try:
+        changelog = read_changelog(args.changelog)
+    except ChangelogError as exc:
+        print(f"ERROR: {exc}", file=stderr)
+        return EXIT_CHANGELOG
+    baseline = Version.parse(FIRST_PUBLISHED_VERSION)
+    if not changelog.entries:
+        if roadmap_version == baseline:
+            print(
+                "ok: roadmap 1.0 is the publication baseline; "
+                "no post-publication changes are recorded",
+                file=stdout,
+            )
+            return EXIT_SUCCESS
+        print(
+            f"ERROR: roadmap {roadmap_version} has no changelog entry",
+            file=stderr,
+        )
+        return EXIT_CONFLICT
+    newest = changelog.entries[0].version
+    if newest != roadmap_version:
+        print(
+            f"ERROR: newest changelog version is {newest}, "
+            f"but roadmap version is {roadmap_version}",
+            file=stderr,
+        )
+        return EXIT_CONFLICT
+    if any(entry.version <= baseline for entry in changelog.entries):
+        print(
+            "ERROR: changelog must contain only post-publication versions > 1.0",
+            file=stderr,
+        )
+        return EXIT_CONFLICT
+    print(f"ok: roadmap {roadmap_version} is canonically recorded", file=stdout)
+    return EXIT_SUCCESS
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="fold-changelog", description="Record or verify roadmap amendments."
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    add = subparsers.add_parser("add", help="record a post-publication change")
+    add.add_argument("--version", required=True, help="MAJOR.MINOR; matches roadmap")
+    add.add_argument("--category", required=True, choices=sorted(CATEGORIES))
+    add.add_argument("--rationale", required=True)
+    add.add_argument("--effect", required=True)
+    add.add_argument("--reacceptance")
+    add.add_argument("--roadmap", type=Path, default=Path("docs/ROADMAP.md"))
+    add.add_argument(
+        "--changelog", type=Path, default=Path("docs/roadmap-changelog.md")
+    )
+    add.add_argument("--dry-run", action="store_true")
+    add.set_defaults(func=command_add)
+    verify = subparsers.add_parser("verify", help="verify publication history")
+    verify.add_argument("--roadmap", type=Path, default=Path("docs/ROADMAP.md"))
+    verify.add_argument(
+        "--changelog", type=Path, default=Path("docs/roadmap-changelog.md")
+    )
+    verify.set_defaults(func=command_verify)
+    return parser
+
+
+def main(argv: Iterable[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    return args.func(args, sys.stdout, sys.stderr)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
