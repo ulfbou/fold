@@ -4,6 +4,7 @@
   "scope": [
     ".fold",
     ".github",
+    "CONTRIBUTING.md",
     "README.md",
     "docs",
     "pyproject.toml",

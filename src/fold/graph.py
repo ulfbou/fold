@@ -1,4 +1,4 @@
-"""Construction and validation of the M1A provenance graph and envelope."""
+"""Construction and validation of the M1A graph and envelope."""
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -8,23 +8,17 @@ from typing import Literal
 from . import __version__
 from .errors import InvariantError
 from .git import GitState, recover_git_state
-from .model import (
-    ChangeRecord,
-    DerivedRef,
-    Envelope,
-    FieldNode,
-    ProvenanceGraph,
-    SourceRef,
-)
-from .render import RENDER_CONSUMES
+from .model import ChangeRecord, DerivedRef, Envelope, FieldNode, ProvenanceGraph, SourceRef
+from .render import RENDER_CONSUMES, canonical_envelope_bytes
 from .task import TaskDeclaration, load_task
 
+ENVELOPE_SCHEMA_VERSION = "1.0"
 DRIFT_RULE_ID = "scope-drift"
 DRIFT_RULE_VERSION = "1.0"
+DRIFT_RULE_IDENTITY = "scope-drift@1.0"
 
 
 def is_path_covered(path: str, scope: str) -> bool:
-    """Return whether a path equals or descends from a scope component."""
     return path == scope or path.startswith(f"{scope}/")
 
 
@@ -32,15 +26,17 @@ def drift_paths(
     task: TaskDeclaration,
     changes: tuple[ChangeRecord, ...],
 ) -> tuple[str, ...]:
-    """Return non-deletion destinations outside declared component prefixes."""
-    outside: list[str] = []
-    for change in changes:
-        if change.is_deletion:
-            continue
-        if any(is_path_covered(change.path, scope) for scope in task.scope):
-            continue
-        outside.append(change.path)
-    return tuple(sorted(outside))
+    """Return non-deletion destinations outside declared scope."""
+    return tuple(
+        sorted(
+            change.path
+            for change in changes
+            if not change.is_deletion
+            and not any(
+                is_path_covered(change.path, scope) for scope in task.scope
+            )
+        )
+    )
 
 
 def source_field(
@@ -50,7 +46,6 @@ def source_field(
     provider: str,
     locator: str,
 ) -> FieldNode:
-    """Build a declared or recovered field with source provenance."""
     return FieldNode(
         name=name,
         value=value,
@@ -69,7 +64,7 @@ def build_nodes(
 ) -> tuple[FieldNode, ...]:
     """Build M1A collaboration-state fields from authoritative inputs."""
     outside = drift_paths(task, git.changes)
-    return (
+    declared = (
         source_field(
             "schema_version",
             task.schema_version,
@@ -77,27 +72,11 @@ def build_nodes(
             "task",
             ".fold/task.json#/schemaVersion",
         ),
-        source_field(
-            "title",
-            task.title,
-            "declared",
-            "task",
-            ".fold/task.json#/title",
-        ),
-        source_field(
-            "scope",
-            task.scope,
-            "declared",
-            "task",
-            ".fold/task.json#/scope",
-        ),
-        source_field(
-            "tests",
-            task.tests,
-            "declared",
-            "task",
-            ".fold/task.json#/tests",
-        ),
+        source_field("title", task.title, "declared", "task", ".fold/task.json#/title"),
+        source_field("scope", task.scope, "declared", "task", ".fold/task.json#/scope"),
+        source_field("tests", task.tests, "declared", "task", ".fold/task.json#/tests"),
+    )
+    recovered = (
         source_field(
             "repository_root",
             git.root.as_posix(),
@@ -105,20 +84,8 @@ def build_nodes(
             "git.repository_root",
             "repository root",
         ),
-        source_field(
-            "head",
-            git.head,
-            "recovered",
-            "git.head",
-            "HEAD",
-        ),
-        source_field(
-            "branch",
-            git.branch,
-            "recovered",
-            "git.branch",
-            "current branch",
-        ),
+        source_field("head", git.head, "recovered", "git.head", "HEAD"),
+        source_field("branch", git.branch, "recovered", "git.branch", "current branch"),
         source_field(
             "changes",
             git.changes,
@@ -126,6 +93,8 @@ def build_nodes(
             "git.changed_paths",
             "working tree and index",
         ),
+    )
+    derived = (
         FieldNode(
             name="drift_paths",
             value=outside,
@@ -149,6 +118,7 @@ def build_nodes(
             ),
         ),
     )
+    return declared + recovered + derived
 
 
 def consumer_names(graph: ProvenanceGraph) -> frozenset[str]:
@@ -160,20 +130,11 @@ def consumer_names(graph: ProvenanceGraph) -> frozenset[str]:
     return frozenset(names)
 
 
-def classified(
-    graph: ProvenanceGraph,
-    kind: str,
-) -> tuple[FieldNode, ...]:
-    """Select graph nodes by collaboration-state classification."""
-    return tuple(
-        node for node in graph.nodes if node.classification == kind
-    )
+def classified(graph: ProvenanceGraph, kind: str) -> tuple[FieldNode, ...]:
+    return tuple(node for node in graph.nodes if node.classification == kind)
 
 
-def rule_identities(
-    nodes: Iterable[FieldNode],
-) -> tuple[tuple[str, str], ...]:
-    """Return canonical identities referenced by derived fields."""
+def rule_identities(nodes: Iterable[FieldNode]) -> tuple[tuple[str, str], ...]:
     identities = {
         (node.provenance.rule_id, node.provenance.rule_version)
         for node in nodes
@@ -191,7 +152,7 @@ def compression_ratio(
 
 
 def build_envelope(graph: ProvenanceGraph) -> Envelope:
-    """Compute and validate metadata without adding graph fields."""
+    """Validate consumers and compute metadata outside the field graph."""
     names = [node.name for node in graph.nodes]
     if len(names) != len(set(names)):
         raise InvariantError("duplicate field names in evaluated graph")
@@ -216,7 +177,7 @@ def build_envelope(graph: ProvenanceGraph) -> Envelope:
         node for node in derived if node.name in consumers
     )
     return Envelope(
-        schema_version="1.0",
+        schema_version=ENVELOPE_SCHEMA_VERSION,
         tool_version=__version__,
         declared_field_count=len(declared),
         recovered_field_count=len(recovered),
@@ -230,6 +191,13 @@ def build_envelope(graph: ProvenanceGraph) -> Envelope:
     )
 
 
+def verify_envelope(graph: ProvenanceGraph, envelope: Envelope) -> None:
+    """Reject an envelope that differs from canonical graph recomputation."""
+    recomputed = build_envelope(graph)
+    if canonical_envelope_bytes(envelope) != canonical_envelope_bytes(recomputed):
+        raise InvariantError("envelope differs from canonical graph recomputation")
+
+
 def evaluate(start: Path) -> tuple[ProvenanceGraph, Envelope]:
     """Recover sources once, build one graph, and compute one envelope."""
     git = recover_git_state(start)
@@ -237,4 +205,6 @@ def evaluate(start: Path) -> tuple[ProvenanceGraph, Envelope]:
     graph = ProvenanceGraph(
         tuple(sorted(build_nodes(task, git), key=lambda node: node.name))
     )
-    return graph, build_envelope(graph)
+    envelope = build_envelope(graph)
+    verify_envelope(graph, envelope)
+    return graph, envelope

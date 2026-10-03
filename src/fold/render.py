@@ -1,22 +1,135 @@
+"""Canonical human and JSON renderers for the evaluated Fold graph."""
 from __future__ import annotations
 
 import json
 from typing import Any
 
-from .model import DerivedRef, FieldNode, ProvenanceGraph, SourceRef
+from .model import ChangeRecord, Envelope, FieldNode, ProvenanceGraph, SourceRef
+
+RENDER_CONSUMES: dict[str, frozenset[str]] = {
+    "task": frozenset(
+        {
+            "branch",
+            "changes",
+            "drift_paths",
+            "head",
+            "repository_root",
+            "scope",
+            "status",
+            "tests",
+            "title",
+        }
+    ),
+    "explain_json": frozenset({"schema_version"}),
+}
 
 
-def _lines(value: Any) -> list[str]:
-    if isinstance(value, (tuple, list)):
-        return [str(item) for item in value] or ["(none)"]
-    if isinstance(value, float):
-        return [f"{value:.3f}"]
-    return [str(value)]
+def value_to_json(value: Any) -> Any:
+    if isinstance(value, ChangeRecord):
+        document: dict[str, Any] = {
+            "path": value.path,
+            "indexKind": value.index_kind.value,
+            "worktreeKind": value.worktree_kind.value,
+        }
+        if value.original_path is not None:
+            document["originalPath"] = value.original_path
+        if value.unmerged:
+            document["unmerged"] = True
+        return document
+    if isinstance(value, tuple):
+        return [value_to_json(item) for item in value]
+    return value
 
 
-def render_task(graph: ProvenanceGraph) -> str:
+def node_to_json(node: FieldNode) -> dict[str, Any]:
+    provenance = node.provenance
+    if isinstance(provenance, SourceRef):
+        detail = {
+            "kind": "source",
+            "provider": provenance.provider,
+            "locator": provenance.locator,
+        }
+    else:
+        detail = {
+            "kind": "derived",
+            "ruleId": provenance.rule_id,
+            "ruleVersion": provenance.rule_version,
+            "inputs": list(provenance.inputs),
+        }
+    return {
+        "name": node.name,
+        "value": value_to_json(node.value),
+        "classification": node.classification,
+        "provenance": detail,
+    }
+
+
+def envelope_to_json(envelope: Envelope) -> dict[str, Any]:
+    return {
+        "schemaVersion": envelope.schema_version,
+        "toolVersion": envelope.tool_version,
+        "declaredFieldCount": envelope.declared_field_count,
+        "recoveredFieldCount": envelope.recovered_field_count,
+        "derivedFieldCount": envelope.derived_field_count,
+        "verifiedFieldCount": envelope.verified_field_count,
+        "compressionRatio": envelope.compression_ratio,
+        "derivationCount": envelope.derivation_count,
+        "declarativeBurden": envelope.declarative_burden,
+        "unconsumedRecoveries": list(envelope.unconsumed_recoveries),
+        "referencedRules": [
+            {"ruleId": rule_id, "ruleVersion": version}
+            for rule_id, version in envelope.referenced_rules
+        ],
+    }
+
+
+def canonical_envelope_bytes(envelope: Envelope) -> bytes:
+    """Serialize an envelope canonically for recomputation comparison."""
+    return (
+        json.dumps(
+            envelope_to_json(envelope),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def graph_json(graph: ProvenanceGraph, envelope: Envelope) -> dict[str, Any]:
+    return {
+        "schemaVersion": "1.0",
+        "envelope": envelope_to_json(envelope),
+        "fields": [node_to_json(node) for node in graph.nodes],
+    }
+
+
+def render_explain_json(graph: ProvenanceGraph, envelope: Envelope) -> str:
+    return (
+        json.dumps(
+            graph_json(graph, envelope),
+            indent=2,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
+
+def indented(values: list[str]) -> list[str]:
+    return [f"  {value}" for value in values] if values else ["  (none)"]
+
+
+def render_task(graph: ProvenanceGraph, envelope: Envelope) -> str:
+    """Render the accepted human task surface from the graph and envelope."""
     nodes = graph.by_name()
-    sections = [
+    changes = [change.path for change in nodes["changes"].value]
+    ratio = (
+        "n/a"
+        if envelope.compression_ratio is None
+        else f"{envelope.compression_ratio:.3f}"
+    )
+    lines = [
         "FOLD TASK",
         "",
         f"STATUS: {nodes['status'].value}",
@@ -30,66 +143,58 @@ def render_task(graph: ProvenanceGraph) -> str:
         f"  head: {nodes['head'].value}",
         "",
         "DECLARED SCOPE",
-        *[f"  {item}" for item in _lines(nodes['scope'].value)],
+        *indented(list(nodes["scope"].value)),
         "",
         "ACTUAL CHANGES",
-        *[f"  {item}" for item in _lines(nodes['changed_paths'].value)],
+        *indented(changes),
         "",
         "DRIFT",
-        *[f"  {item}" for item in _lines(nodes['drift_paths'].value)],
+        *indented(list(nodes["drift_paths"].value)),
         "",
         "VERIFICATION",
-        *[f"  {item}" for item in _lines(nodes['tests'].value)],
+        *indented(list(nodes["tests"].value)),
         "",
         "METRICS",
-        f"  compression_ratio: {nodes['compression_ratio'].value:.3f}",
-        f"  derivation_count: {nodes['derivation_count'].value}",
-        f"  declarative_backlog: {nodes['declarative_backlog'].value}",
+        f"  compression_ratio: {ratio}",
+        f"  derivation_count: {envelope.derivation_count}",
+        f"  declarative_burden: {envelope.declarative_burden}",
     ]
-    return "\n".join(sections) + "\n"
+    return "\n".join(lines) + "\n"
 
 
-def _node_json(node: FieldNode) -> dict[str, Any]:
-    provenance = node.provenance
-    if isinstance(provenance, SourceRef):
-        prov = {"kind": "source", "provider": provenance.provider, "locator": provenance.locator}
-    else:
-        prov = {"kind": "derived", "ruleId": provenance.rule_id, "ruleVersion": provenance.rule_version, "inputs": list(provenance.inputs)}
-    value = list(node.value) if isinstance(node.value, tuple) else node.value
-    return {"name": node.name, "value": value, "classification": node.classification, "provenance": prov}
-
-
-def graph_json(graph: ProvenanceGraph) -> dict[str, Any]:
-    return {"schemaVersion": "1.0", "fields": [_node_json(node) for node in graph.nodes]}
-
-
-def render_explain_json(graph: ProvenanceGraph) -> str:
-    return json.dumps(graph_json(graph), indent=2, ensure_ascii=False, sort_keys=True) + "\n"
-
-
-def _walk(name: str, nodes: dict[str, FieldNode], depth: int, seen: set[str]) -> list[str]:
+def _walk(name: str, nodes: dict[str, FieldNode], depth: int) -> list[str]:
     node = nodes[name]
-    pad = "  " * depth
-    lines = [f"{pad}{node.name}", f"{pad}  classification: {node.classification}"]
+    padding = "  " * depth
+    lines = [
+        f"{padding}{node.name}",
+        f"{padding}  classification: {node.classification}",
+    ]
     provenance = node.provenance
     if isinstance(provenance, SourceRef):
-        lines.extend((f"{pad}  source: {provenance.provider}", f"{pad}  locator: {provenance.locator}"))
+        lines.extend(
+            (
+                f"{padding}  source: {provenance.provider}",
+                f"{padding}  locator: {provenance.locator}",
+            )
+        )
     else:
-        lines.extend((f"{pad}  rule: {provenance.rule_id}@{provenance.rule_version}", f"{pad}  inputs:"))
-        if name in seen:
-            lines.append(f"{pad}    (cycle suppressed)")
-        else:
-            next_seen = set(seen) | {name}
-            for input_name in provenance.inputs:
-                lines.extend(_walk(input_name, nodes, depth + 2, next_seen))
+        lines.extend(
+            (
+                f"{padding}  rule: {provenance.rule_id}@{provenance.rule_version}",
+                f"{padding}  inputs:",
+            )
+        )
+        for input_name in provenance.inputs:
+            lines.extend(_walk(input_name, nodes, depth + 2))
     return lines
 
 
 def render_explain(graph: ProvenanceGraph, field: str | None = None) -> str:
+    """Recursively render accepted M0 provenance without graph validation."""
     nodes = graph.by_name()
     names = [field] if field else [node.name for node in graph.nodes]
-    unknown = [name for name in names if name not in nodes]
-    if unknown:
-        raise KeyError(unknown[0])
-    blocks = ["\n".join(_walk(name, nodes, 0, set())) for name in names]
+    blocks: list[str] = []
+    for name in names:
+        graph.get_for_explanation(name)
+        blocks.append("\n".join(_walk(name, nodes, 0)))
     return "\n\n".join(blocks) + "\n"
