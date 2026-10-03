@@ -3,10 +3,13 @@
   "title": "Prove inspectable collaboration-state compression",
   "scope": [
     ".fold",
+    ".github",
     "README.md",
+    "docs",
     "pyproject.toml",
     "src",
-    "tests"
+    "tests",
+    "tools"
   ],
   "tests": [
     "python -m pytest"
