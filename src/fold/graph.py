@@ -131,10 +131,22 @@ def validate_graph(graph: ProvenanceGraph) -> None:
 
         state[name] = "visiting"
         node = nodes[name]
+        if node.classification == "derived":
+            if not isinstance(node.provenance, DerivedRef):
+                raise InvariantError(
+                    f"derived field {name!r} lacks derived provenance"
+                )
+        elif isinstance(node.provenance, DerivedRef):
+            raise InvariantError(
+                f"source field {name!r} has derived provenance"
+            )
 
         if isinstance(node.provenance, DerivedRef):
             provenance = node.provenance
-            resolve_rule(provenance.rule_id, provenance.rule_version)
+            resolve_rule(
+                provenance.rule_id,
+                provenance.rule_version,
+            )
 
             for input_name in provenance.inputs:
                 if input_name not in nodes:

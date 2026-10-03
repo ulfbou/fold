@@ -611,3 +611,78 @@ def test_human_and_json_explanations_share_recursive_semantics(
     assert "    changes: []\n" in human
     assert "    scope\n" in human
     assert "    changes\n" in human
+
+
+def test_graph_validation_requires_recursive_source_leaf_termination() -> None:
+    from fold.graph import validate_graph
+    from fold.model import DerivedRef
+
+    invalid_leaf = FieldNode(
+        name="invalid_leaf",
+        value=(),
+        classification="derived",
+        provenance=SourceRef(
+            kind="source",
+            provider="test",
+            locator="fixture",
+        ),
+    )
+    root = FieldNode(
+        name="root",
+        value=(),
+        classification="derived",
+        provenance=DerivedRef(
+            kind="derived",
+            rule_id="scope-drift",
+            rule_version="1.0",
+            inputs=("invalid_leaf",),
+        ),
+    )
+
+    graph = ProvenanceGraph(nodes=(invalid_leaf, root))
+
+    with pytest.raises(
+        InvariantError,
+        match="derived field.*lacks derived provenance",
+    ):
+        validate_graph(graph)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        ("task", "--check"),
+        ("explain", "broken"),
+    ),
+)
+def test_invalid_graph_fails_before_renderer_or_gate_consumption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: tuple[str, ...],
+) -> None:
+    from fold.model import DerivedRef
+
+    root = repository(tmp_path)
+    invalid = (
+        FieldNode(
+            name="broken",
+            value=(),
+            classification="derived",
+            provenance=DerivedRef(
+                kind="derived",
+                rule_id="scope-drift",
+                rule_version="1.0",
+                inputs=("missing",),
+            ),
+        ),
+    )
+
+    def invalid_nodes(
+        task: TaskDeclaration,
+        git_state: object,
+    ) -> tuple[FieldNode, ...]:
+        return invalid
+
+    monkeypatch.setattr("fold.graph.build_nodes", invalid_nodes)
+
+    assert run(list(arguments), root) == 5
