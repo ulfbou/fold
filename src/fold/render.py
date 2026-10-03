@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from .model import ChangeRecord, Envelope, FieldNode, ProvenanceGraph, SourceRef
+from .rules import resolve_rule
 
 RENDER_CONSUMES: dict[str, frozenset[str]] = {
     "task": frozenset(
@@ -64,6 +65,51 @@ def node_to_json(node: FieldNode) -> dict[str, Any]:
     }
 
 
+
+def explanation_to_json(
+    name: str,
+    nodes: dict[str, FieldNode],
+) -> dict[str, Any]:
+    """Build one recursive explanation from the evaluated graph."""
+    node = nodes[name]
+    provenance = node.provenance
+    document: dict[str, Any] = {
+        "classification": node.classification,
+        "name": node.name,
+        "value": value_to_json(node.value),
+    }
+
+    if isinstance(provenance, SourceRef):
+        document["provenance"] = {
+            "kind": "source",
+            "locator": provenance.locator,
+            "provider": provenance.provider,
+        }
+        return document
+
+    rule = resolve_rule(provenance.rule_id, provenance.rule_version)
+    inputs = [
+        explanation_to_json(input_name, nodes)
+        for input_name in provenance.inputs
+    ]
+    document["provenance"] = {
+        "descriptor": rule.descriptor.canonical_document(),
+        "evaluatedInputs": [
+            {
+                "name": input_name,
+                "value": value_to_json(nodes[input_name].value),
+            }
+            for input_name in provenance.inputs
+        ],
+        "inputs": inputs,
+        "kind": "derived",
+        "output": value_to_json(node.value),
+        "ruleId": provenance.rule_id,
+        "ruleVersion": provenance.rule_version,
+    }
+    return document
+
+
 def envelope_to_json(envelope: Envelope) -> dict[str, Any]:
     return {
         "schemaVersion": envelope.schema_version,
@@ -96,14 +142,21 @@ def canonical_envelope_bytes(envelope: Envelope) -> bytes:
     ).encode("utf-8")
 
 
-def graph_json(graph: ProvenanceGraph, envelope: Envelope) -> dict[str, Any]:
+
+def graph_json(
+    graph: ProvenanceGraph,
+    envelope: Envelope,
+) -> dict[str, Any]:
+    nodes = graph.by_name()
     return {
         "schemaVersion": "1.0",
         "envelope": envelope_to_json(envelope),
         "fields": [node_to_json(node) for node in graph.nodes],
+        "explanations": [
+            explanation_to_json(node.name, nodes)
+            for node in graph.nodes
+        ],
     }
-
-
 def render_explain_json(graph: ProvenanceGraph, envelope: Envelope) -> str:
     return (
         json.dumps(
@@ -162,14 +215,27 @@ def render_task(graph: ProvenanceGraph, envelope: Envelope) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _walk(name: str, nodes: dict[str, FieldNode], depth: int) -> list[str]:
+
+def _walk(
+    name: str,
+    nodes: dict[str, FieldNode],
+    depth: int,
+) -> list[str]:
     node = nodes[name]
     padding = "  " * depth
+    value = json.dumps(
+        value_to_json(node.value),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
     lines = [
         f"{padding}{node.name}",
         f"{padding}  classification: {node.classification}",
+        f"{padding}  value: {value}",
     ]
     provenance = node.provenance
+
     if isinstance(provenance, SourceRef):
         lines.extend(
             (
@@ -177,24 +243,53 @@ def _walk(name: str, nodes: dict[str, FieldNode], depth: int) -> list[str]:
                 f"{padding}  locator: {provenance.locator}",
             )
         )
-    else:
-        lines.extend(
-            (
-                f"{padding}  rule: {provenance.rule_id}@{provenance.rule_version}",
-                f"{padding}  inputs:",
-            )
+        return lines
+
+    rule = resolve_rule(provenance.rule_id, provenance.rule_version)
+    descriptor = json.dumps(
+        rule.descriptor.canonical_document(),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    lines.extend(
+        (
+            f"{padding}  rule: "
+            f"{provenance.rule_id}@{provenance.rule_version}",
+            f"{padding}  evaluator_digest: "
+            f"{rule.descriptor.evaluator_digest}",
+            f"{padding}  descriptor: {descriptor}",
+            f"{padding}  evaluated_inputs:",
         )
-        for input_name in provenance.inputs:
-            lines.extend(_walk(input_name, nodes, depth + 2))
+    )
+
+    for input_name in provenance.inputs:
+        input_value = json.dumps(
+            value_to_json(nodes[input_name].value),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        lines.append(f"{padding}    {input_name}: {input_value}")
+
+    lines.append(f"{padding}  inputs:")
+    for input_name in provenance.inputs:
+        lines.extend(_walk(input_name, nodes, depth + 2))
+
+    lines.append(f"{padding}  output: {value}")
     return lines
 
-
-def render_explain(graph: ProvenanceGraph, field: str | None = None) -> str:
-    """Recursively render accepted M0 provenance without graph validation."""
+def render_explain(
+    graph: ProvenanceGraph,
+    field: str | None = None,
+) -> str:
+    """Render recursive provenance from the validated evaluated graph."""
     nodes = graph.by_name()
     names = [field] if field else [node.name for node in graph.nodes]
     blocks: list[str] = []
+
     for name in names:
         graph.get_for_explanation(name)
         blocks.append("\n".join(_walk(name, nodes, 0)))
+
     return "\n\n".join(blocks) + "\n"
