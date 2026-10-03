@@ -33,18 +33,30 @@ Declared scope is an allowed-prefix set. Staged, unstaged, untracked, renamed, a
 
 Plain `fold task` renders `DRIFTED` and continues. `fold task --check` renders the same deterministic view and exits `1` when drift exists.
 
+## Explanation contract
+
+`fold explain FIELD` recursively traverses derivation inputs, preserving the
+accepted M0 human explanation behavior. Full graph validation, rule registry,
+and equivalent recursive JSON semantics remain M1B scope. `fold explain --json` serializes the complete
+graph and envelope deterministically.
+
 ## Exit codes
 
 - `0`: success
 - `1`: drift detected under `task --check`
 - `2`: usage error
 - `3`: missing or invalid task declaration
-- `4`: source unavailable or Git failure
+- `4`: authoritative source unavailable or invalid
+- `5`: internal graph, envelope, or invariant failure
 
-## Metrics
+## Graph envelope
 
-- **Compression ratio**: recovered field count divided by declared field count.
-- **Derivation count**: number of derived fields.
-- **Declarative backlog**: declared fields explicitly marked as plausible future recovery candidates. Milestone 0 has no backlog registry, so the rendered value is `0`.
+Declared, recovered, and derived remain the only field kinds. Counts, compression ratio, derivation count, declarative burden, and consumed-recovery checks are computed in a separate immutable envelope, so metadata cannot count itself. No declarative-backlog value is rendered because no authoritative backlog artifact exists.
+
+Git changes are recovered through the stable `git.changed_paths` provider as deterministic semantic records preserving index, worktree, rename, deletion, untracked, and unmerged state.
 
 Outputs are deterministic for identical task and Git inputs: fields and paths are ordered, timestamps are absent, and locale-dependent formatting is not used.
+
+## Contributing
+
+See [Contributing to Fold](CONTRIBUTING.md), [Coding Standards](docs/coding-standards.md), and [Documentation Standards](docs/documentation-standards.md).
