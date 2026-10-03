@@ -388,3 +388,79 @@ def test_exit_codes_two_through_five_have_focused_evidence(
 
     monkeypatch.setattr("fold.cli.evaluate", invariant_failure)
     assert run(["task"], root) == 5
+
+
+def test_rule_registry_resolves_only_exact_identity() -> None:
+    from fold.rules import resolve_rule
+
+    rule = resolve_rule("scope-drift", "1.0")
+
+    assert rule.descriptor.rule_id == "scope-drift"
+    assert rule.descriptor.rule_version == "1.0"
+    assert rule.descriptor.inputs == ("scope", "changes")
+
+    with pytest.raises(InvariantError, match="scope-drift@2.0"):
+        resolve_rule("scope-drift", "2.0")
+
+    with pytest.raises(InvariantError, match="unknown@1.0"):
+        resolve_rule("unknown", "1.0")
+
+
+def test_scope_drift_descriptor_is_canonical_and_digest_bound() -> None:
+    from fold.rules import (
+        canonical_descriptor_bytes,
+        registered_rules,
+        semantic_implementation_digest,
+    )
+
+    rules = registered_rules()
+    assert len(rules) == 1
+
+    rule = rules[0]
+    descriptor = rule.descriptor
+    document = json.loads(canonical_descriptor_bytes(descriptor))
+
+    assert document["ruleId"] == "scope-drift"
+    assert document["ruleVersion"] == "1.0"
+    assert document["inputs"] == ["scope", "changes"]
+    assert document["policyConstants"] == {
+        "deletionOutsideScopeCreatesDrift": False,
+        "pathRelation": "equal-or-descendant-component-prefix",
+    }
+    assert descriptor.evaluator_digest == semantic_implementation_digest(
+        rule.evaluator
+    )
+    assert len(descriptor.evaluator_digest) == 64
+
+
+def test_registered_scope_drift_evaluator_preserves_existing_semantics() -> None:
+    from fold.rules import resolve_rule
+
+    task = TaskDeclaration(
+        schema_version="1.0",
+        title="Registry",
+        scope=("src",),
+        tests=("python -m pytest",),
+    )
+    changes = (
+        ChangeRecord(
+            path="src/in.py",
+            index_kind=ChangeKind.MODIFIED,
+            worktree_kind=ChangeKind.UNCHANGED,
+        ),
+        ChangeRecord(
+            path="outside/new.py",
+            index_kind=ChangeKind.ADDED,
+            worktree_kind=ChangeKind.UNCHANGED,
+        ),
+        ChangeRecord(
+            path="outside/deleted.py",
+            index_kind=ChangeKind.DELETED,
+            worktree_kind=ChangeKind.UNCHANGED,
+        ),
+    )
+
+    rule = resolve_rule("scope-drift", "1.0")
+
+    assert rule.evaluator(task.scope, changes) == drift_paths(task, changes)
+    assert rule.evaluator(task.scope, changes) == ("outside/new.py",)
