@@ -1,6 +1,6 @@
 # Fold Roadmap
 
-**Roadmap version:** 1.0
+**Roadmap version:** 1.1
 
 Fold milestones prove thesis increments. This roadmap is a claim about order, not a feature backlog. Each milestone must establish a capability that later milestones depend on, add the smallest surface needed to prove it, and preserve every previously accepted guarantee.
 
