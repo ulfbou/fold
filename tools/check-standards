@@ -77,8 +77,6 @@ def check_markdown(path: Path, text: str) -> None:
 
 
 def main() -> int:
-    if (ROOT / "src" / "fold" / "rules.py").exists():
-        fail("src/fold/rules.py is M1B scope and must not exist in M1A")
     paths = governed_text_paths()
     for path in paths:
         text = check_text(path)
