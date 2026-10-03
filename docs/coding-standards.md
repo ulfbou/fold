@@ -52,6 +52,9 @@ practice.
 
 - Public functions and non-obvious protocol parsers require docstrings that
   describe their contract, not their implementation syntax.
+- Invoke repository Python tools explicitly with `python3`, for example
+  `python3 tools/fold-changelog verify`; executable mode is not a public tool
+  contract.
 - Catch only exceptions that can be handled or translated at that boundary.
 - Do not catch `Exception` around product logic.
 - User input failures and internal invariant failures are distinct:
@@ -104,6 +107,12 @@ practice.
   output and remains present for envelope-schema continuity and diagnostics.
 - No fabricated fallback value may stand in for an absent authoritative
   artifact.
+
+## Planned M1B rule implementation standard
+
+Rule registry, descriptor, semantic implementation digest, missing-input
+validation, and cycle rejection are M1B scope. M1A uses only the exact public
+identity `scope-drift@1.0` and does not add descriptor machinery.
 
 ## Rendering and serialization
 

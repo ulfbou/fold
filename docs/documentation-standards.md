@@ -20,7 +20,7 @@ Each behavior has one controlling document:
   operational behavior when the roadmap requires them.
 
 Do not duplicate a controlling contract. Summaries link to it and must not
-silently add or weaken obligations.
+silently add or weaken obligations. Checklists and acceptance records reference stable contract headings or identifiers instead of copying normative text when a link can provide the same review evidence.
 
 ## Required qualities
 
@@ -87,12 +87,12 @@ normalization, duplication behavior, compatibility rules, and examples of both
 valid and invalid input.
 
 Provider documentation names the stable provider identity rather than exposing
-an incidental shell command as the public contract.
+an incidental shell command as the public contract. Once a released provider is replaced or retired, the controlling contract also states the supported identity set, replacement behavior, and migration/removal conditions. Do not create provider lifecycle machinery before such a compatibility obligation exists.
 
 Rule documentation names the exact rule identity and version, ordered inputs,
 policy constants, output contract, and predicate. M1B adds descriptor and
-evaluator-digest obligations; M1A documentation must not claim they already
-exist.
+semantic-implementation-digest obligations; M1A documentation must not claim they already
+exist. When more than one released rule version or schema version is supported, the controlling contract explicitly states accepted versions, emitted version, migration behavior, and rejection/removal conditions.
 
 ## Roadmap and changelog rules
 

@@ -35,10 +35,10 @@ Plain `fold task` renders `DRIFTED` and continues. `fold task --check` renders t
 
 ## Explanation contract
 
-`fold explain FIELD` reports the field classification and its direct source or
-direct derivation inputs. Recursive traversal and equivalent recursive human
-and JSON explanations remain M1B scope. `fold explain --json` serializes the
-complete current graph and envelope deterministically.
+`fold explain FIELD` recursively traverses derivation inputs, preserving the
+accepted M0 human explanation behavior. Full graph validation, rule registry,
+and equivalent recursive JSON semantics remain M1B scope. `fold explain --json` serializes the complete
+graph and envelope deterministically.
 
 ## Exit codes
 
@@ -59,6 +59,4 @@ Outputs are deterministic for identical task and Git inputs: fields and paths ar
 
 ## Contributing
 
-Repository contributions follow [Contributing to Fold](CONTRIBUTING.md), the
-[Coding Standards](docs/coding-standards.md), and the
-[Documentation Standards](docs/documentation-standards.md).
+See [Contributing to Fold](CONTRIBUTING.md), [Coding Standards](docs/coding-standards.md), and [Documentation Standards](docs/documentation-standards.md).

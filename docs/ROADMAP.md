@@ -59,7 +59,7 @@ Every derived field names:
 - the evaluated input values;
 - the resulting value.
 
-A rule descriptor is bound to its evaluator by a content digest of the evaluator's canonical source, recorded in the descriptor and verified in CI. Any change to evaluator semantics that leaves the descriptor digest unchanged is an invariant failure. Any change to descriptor semantics that leaves the evaluator unchanged is also an invariant failure.
+A rule descriptor is bound to its evaluator by a semantic implementation digest recorded in the descriptor and verified in CI. The digest is computed from a canonical semantic representation defined by the rule-registry contract; it excludes non-semantic formatting, comments, source locations, and other mechanically identified presentation-only changes. The digest is evidence that the registered implementation matches the descriptor, not the public identity of a rule. Any semantic evaluator change that leaves the descriptor or rule version unchanged is an invariant failure. Descriptor-only editorial changes that do not alter identity, ordered inputs, policy constants, predicate, or output contract do not require an evaluator change or rule-version increment.
 
 Runtime values come from graph inputs. Any policy constant that affects semantics must be visible in the versioned rule definition. Fold never resolves a derivation against a different version implicitly.
 
@@ -125,8 +125,10 @@ Every milestone must satisfy these conditions before implementation begins:
 - Regression coverage for all affected earlier guarantees is identified.
 - The work fits one reviewable milestone and can be delivered through bounded PRs.
 - No required behavior depends on conversational memory.
+- Evidence is proportional to contract risk: reuse existing executable evidence when it already proves an unchanged obligation; add new evidence only for new or changed behavior.
+- Acceptance records link to controlling contracts and executable evidence rather than restating them.
 
-If any item fails, the milestone is not acceptance-ready. The next action is to resolve the missing decision or evidence, not begin implementation.
+If any item fails, the milestone is not acceptance-ready. The next action is to resolve the missing decision or evidence, not begin implementation. Governance work must remain the minimum needed to make the proof mechanically reviewable.
 
 ## Common Definition of Done
 
@@ -221,8 +223,9 @@ M1 is one public milestone with two internal acceptance gates. M1A must pass bef
 - Register `scope-drift` with one consistent exact version.
 - Keep evaluators in-tree as Python code.
 - Expose an inspectable canonical descriptor containing identity, inputs, output contract, policy constants, and documented predicate.
-- Include the evaluator digest in the canonical descriptor. `fold explain` renders the digest alongside the rule ID and version. CI verifies that every registered rule's descriptor digest matches its current evaluator.
-- Increment a rule version only when its descriptor digest or input set changes. Documentation, formatting, and refactoring that preserve the digest do not bump the version.
+- Include the semantic implementation digest in the canonical descriptor. `fold explain` renders the digest alongside the rule ID and version. CI verifies that every registered rule's descriptor digest matches its canonical semantic evaluator representation.
+- Increment a rule version when observable rule semantics change, including identity-relevant changes to ordered inputs, policy constants, predicate, or output contract. Formatting, comments, source relocation, and refactoring proven by the canonicalization contract to preserve semantics do not bump the version.
+- Define and test the canonical semantic representation before digest verification becomes an acceptance gate; digest churn alone must never force rule-version churn.
 - Treat unknown rules and version mismatches as invariant failures.
 
 #### Graph validation (M1B)
@@ -246,7 +249,7 @@ M1 is one public milestone with two internal acceptance gates. M1A must pass bef
 
 - Treat declared scope as an allowed repository-relative component-prefix set.
 - Report non-deletion changes outside scope as drift.
-- Report deletion outside scope without treating it as drift in rule version 1.
+- Report deletion outside scope without treating it as drift in rule identity `scope-drift@1.0`.
 - Treat equal or descendant paths as covered.
 - Allow declared scope to be broader than actual changes.
 - Treat an empty change set as aligned.
@@ -288,7 +291,7 @@ M1 is acceptable when:
 - graph metadata reflects actual validated graph structure and cannot self-inflate;
 - recomputing the envelope from the validated graph produces byte-identical envelope output, and a mismatch fails the run rather than warning;
 - changed paths with spaces and all documented porcelain-v2 kinds are parsed correctly;
-- scope-drift version 1 matches the documented deletion and path-boundary contract;
+- `scope-drift@1.0` matches the documented deletion and path-boundary contract;
 - plain task rendering warns on drift and returns success;
 - explicit checking returns the contract-violation exit code on drift;
 - exit codes `0` through `5` have focused proof;
@@ -589,7 +592,9 @@ All common DoD items pass and one real fixture proves identity, pinning, recursi
 Fold is the normal human interface to repository-resident collaboration state because sustained use shows lower declared burden, deterministic recursive provenance, and earlier hot-path contract detection.
 
 ### Dependency and entry evidence
-M10 requires accepted M0 through M4 and only promoted candidates justified by evidence. Assessment requires at least twenty completed real tasks over at least three calendar months. Each task records declared, recovered, derived, and verified counts. Every newly declared field must either replace an earlier declaration or include a justification naming the specific invariant number and obligation it preserves.
+M10 requires accepted M0 through M4 and only promoted candidates justified by evidence. Assessment requires at least twenty completed real tasks over at least three calendar months. Each task records declared, recovered, derived, verified, and user-maintained field counts from the validated graph and records the schema/tool identity that produced them. Every newly declared field must either replace an earlier declaration or include a justification naming the specific invariant number and obligation it preserves.
+
+For horizon evidence, declarative burden is the number of distinct collaboration-state fields that a user must author or edit for the task after Fold-controlled defaults and recovery have been applied. Task evidence records the canonical field names requiring user maintenance; narrative estimates do not count. Burden reduction is demonstrated only by comparable task classes with their comparison basis recorded. Changes in task scope are reported separately rather than attributed to Fold.
 
 ### Horizon criteria
 Compact Fold surfaces are the normal access path; invariant 7 metrics show reduced burden without gaming; all fields trace to sources or exact rules; evaluator identities and envelope claims are inspectable; gates are on the hot path; adopted projections preserve one graph; candidates exist only by promotion evidence; contract failures are detected earlier without loss of trust or determinism.
@@ -694,6 +699,13 @@ A released field or contract is not silently removed. Any deprecation policy mus
 
 No universal one-minor-version rule is assumed before Fold has evidence that it fits actual releases.
 
+### Contract lifecycle
+Lifecycle machinery is introduced only for contracts that have actually been released or have more than one supported version. Until then, exact identity and the general deprecation contract are sufficient.
+
+When a released rule, provider, schema, or serialized graph contract is superseded, its controlling document must state: the supported identity or version set; which version new artifacts emit; whether older forms are read, rejected, or migrated; the exact migration path when migration is supported; and the removal condition for deprecated forms. Providers additionally document replacement or retirement semantics. No component silently upgrades, falls forward, or substitutes another rule or provider identity.
+
+Compatibility code without a released compatibility obligation is prohibited by invariant 10.
+
 ### Documentation parity
 
 Every rule, provider, exit code, schema, invariant, and public behavior must have one controlling documented contract and executable evidence.
@@ -709,7 +721,7 @@ Each release reports:
 - known declarative burden reduced or introduced;
 - the reason when no metric moves.
 
-Metric movement is evidence, not an automatic success criterion. A release may be valuable because it strengthens trust without increasing compression.
+Metric movement is evidence, not an automatic success criterion. A release may be valuable because it strengthens trust without increasing compression. Compression is intentionally conservative: excluded or unchanged fields are reported as context, never reclassified merely to improve the ratio. Declarative-burden evidence is the preferred measure of user-maintenance reduction; compression remains a structural diagnostic rather than a target to optimize.
 
 ## Acceptance record template
 

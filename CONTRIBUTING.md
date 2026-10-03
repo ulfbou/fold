@@ -43,22 +43,21 @@ Every implementation pull request must include:
 Run the repository checks from the repository root:
 
 ```bash
-python -m pytest
-python tools/fold-changelog verify
-python -m compileall -q src tests
+python3 -m pytest
+python3 tools/fold-changelog verify
+python3 -m compileall -q src tests
+python3 tools/check-standards
 git diff --check
 ```
 
-Run affected public commands as part of feature validation. For M1A this
-includes:
+Run affected public commands as part of feature validation. For M1A this includes:
 
 ```bash
-python -m fold --version
-python -m fold task
-python -m fold explain status
-python -m fold explain --json
-python -m fold task --check
+python3 -m fold --version
+python3 -m fold task
+python3 -m fold explain status
+python3 -m fold explain --json
+python3 -m fold task --check
 ```
 
-A nonzero result is acceptable only when the test explicitly proves that exit
-contract. Do not suppress or reinterpret a failing mandatory check.
+A nonzero result is acceptable only when the test explicitly proves that exit contract. Do not suppress or reinterpret a failing mandatory check.
