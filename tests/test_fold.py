@@ -464,3 +464,88 @@ def test_registered_scope_drift_evaluator_preserves_existing_semantics() -> None
 
     assert rule.evaluator(task.scope, changes) == drift_paths(task, changes)
     assert rule.evaluator(task.scope, changes) == ("outside/new.py",)
+
+
+def test_graph_validation_rejects_duplicate_names() -> None:
+    from fold.graph import validate_graph
+
+    source = SourceRef(kind="source", provider="test", locator="fixture")
+    graph = ProvenanceGraph(
+        nodes=(
+            FieldNode("same", 1, "declared", source),
+            FieldNode("same", 2, "recovered", source),
+        )
+    )
+
+    with pytest.raises(InvariantError, match="duplicate field names"):
+        validate_graph(graph)
+
+
+def test_graph_validation_rejects_missing_derivation_input() -> None:
+    from fold.graph import validate_graph
+    from fold.model import DerivedRef
+
+    graph = ProvenanceGraph(
+        nodes=(
+            FieldNode(
+                name="derived",
+                value=False,
+                classification="derived",
+                provenance=DerivedRef(
+                    kind="derived",
+                    rule_id="scope-drift",
+                    rule_version="1.0",
+                    inputs=("missing",),
+                ),
+            ),
+        )
+    )
+
+    with pytest.raises(InvariantError, match="missing input"):
+        validate_graph(graph)
+
+
+def test_graph_validation_rejects_cycles() -> None:
+    from fold.graph import validate_graph
+    from fold.model import DerivedRef
+
+    graph = ProvenanceGraph(
+        nodes=(
+            FieldNode(
+                "left",
+                (),
+                "derived",
+                DerivedRef("derived", "scope-drift", "1.0", ("right",)),
+            ),
+            FieldNode(
+                "right",
+                (),
+                "derived",
+                DerivedRef("derived", "scope-drift", "1.0", ("left",)),
+            ),
+        )
+    )
+
+    with pytest.raises(InvariantError, match="graph cycle detected"):
+        validate_graph(graph)
+
+
+def test_graph_validation_rejects_unregistered_rule_identity() -> None:
+    from fold.graph import validate_graph
+    from fold.model import DerivedRef
+
+    source = FieldNode(
+        "source",
+        (),
+        "declared",
+        SourceRef(kind="source", provider="test", locator="fixture"),
+    )
+    derived = FieldNode(
+        "derived",
+        (),
+        "derived",
+        DerivedRef("derived", "scope-drift", "999.0", ("source",)),
+    )
+
+    with pytest.raises(InvariantError, match="scope-drift@999.0"):
+        validate_graph(ProvenanceGraph(nodes=(source, derived)))

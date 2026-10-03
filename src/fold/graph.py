@@ -10,6 +10,7 @@ from .errors import InvariantError
 from .git import GitState, recover_git_state
 from .model import ChangeRecord, DerivedRef, Envelope, FieldNode, ProvenanceGraph, SourceRef
 from .render import RENDER_CONSUMES, canonical_envelope_bytes
+from .rules import resolve_rule
 from .task import TaskDeclaration, load_task
 
 ENVELOPE_SCHEMA_VERSION = "1.0"
@@ -26,18 +27,9 @@ def drift_paths(
     task: TaskDeclaration,
     changes: tuple[ChangeRecord, ...],
 ) -> tuple[str, ...]:
-    """Return non-deletion destinations outside declared scope."""
-    return tuple(
-        sorted(
-            change.path
-            for change in changes
-            if not change.is_deletion
-            and not any(
-                is_path_covered(change.path, scope) for scope in task.scope
-            )
-        )
-    )
-
+    """Evaluate scope drift through the exact registered rule."""
+    rule = resolve_rule(DRIFT_RULE_ID, DRIFT_RULE_VERSION)
+    return rule.evaluator(task.scope, changes)
 
 def source_field(
     name: str,
@@ -121,6 +113,42 @@ def build_nodes(
     return declared + recovered + derived
 
 
+def validate_graph(graph: ProvenanceGraph) -> None:
+    """Reject invalid provenance structure before any graph consumer runs."""
+    names = [node.name for node in graph.nodes]
+    if len(names) != len(set(names)):
+        raise InvariantError("duplicate field names in evaluated graph")
+
+    nodes = graph.by_name()
+    state: dict[str, str] = {}
+
+    def visit(name: str) -> None:
+        status = state.get(name)
+        if status == "visiting":
+            raise InvariantError(f"graph cycle detected at field: {name}")
+        if status == "visited":
+            return
+
+        state[name] = "visiting"
+        node = nodes[name]
+
+        if isinstance(node.provenance, DerivedRef):
+            provenance = node.provenance
+            resolve_rule(provenance.rule_id, provenance.rule_version)
+
+            for input_name in provenance.inputs:
+                if input_name not in nodes:
+                    raise InvariantError(
+                        f"derived field {name!r} has missing input {input_name!r}"
+                    )
+                visit(input_name)
+
+        state[name] = "visited"
+
+    for name in names:
+        visit(name)
+
+
 def consumer_names(graph: ProvenanceGraph) -> frozenset[str]:
     """Derive consumers from renderer contracts and derivation inputs."""
     names = set().union(*RENDER_CONSUMES.values())
@@ -153,10 +181,8 @@ def compression_ratio(
 
 def build_envelope(graph: ProvenanceGraph) -> Envelope:
     """Validate consumers and compute metadata outside the field graph."""
-    names = [node.name for node in graph.nodes]
-    if len(names) != len(set(names)):
-        raise InvariantError("duplicate field names in evaluated graph")
 
+    names = [node.name for node in graph.nodes]
     consumers = consumer_names(graph)
     unconsumed = tuple(sorted(set(names) - consumers))
     if unconsumed:
@@ -205,6 +231,7 @@ def evaluate(start: Path) -> tuple[ProvenanceGraph, Envelope]:
     graph = ProvenanceGraph(
         tuple(sorted(build_nodes(task, git), key=lambda node: node.name))
     )
+    validate_graph(graph)
     envelope = build_envelope(graph)
     verify_envelope(graph, envelope)
     return graph, envelope
