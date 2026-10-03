@@ -24,7 +24,7 @@ def build_parser() -> Parser:
     task = subparsers.add_parser("task", help="render the working surface")
     task.add_argument("--check", action="store_true", help="exit 1 on drift")
 
-    explain = subparsers.add_parser("explain", help="render provenance")
+    explain = subparsers.add_parser("explain", help="render direct provenance")
     explain.add_argument("field", nargs="?", help="field to explain")
     explain.add_argument("--json", action="store_true", help="render graph JSON")
     return parser

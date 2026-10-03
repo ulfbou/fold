@@ -61,6 +61,7 @@ def normalize_path(raw_path: bytes) -> str:
 
 
 def parse_status(raw_status: bytes) -> tuple[ChangeKind, ChangeKind]:
+    """Parse the two-character porcelain-v2 XY status field."""
     if len(raw_status) != 2:
         raise SourceUnavailableError(
             f"malformed porcelain-v2 status field: {raw_status!r}"
@@ -88,7 +89,9 @@ def parse_porcelain_v2(data: bytes) -> tuple[ChangeRecord, ...]:
         tag = segment[:1]
         if tag == b"?":
             if segment[1:2] != b" " or len(segment) < 3:
-                raise SourceUnavailableError("malformed porcelain-v2 untracked record")
+                raise SourceUnavailableError(
+                    "malformed porcelain-v2 untracked record"
+                )
             records.append(
                 ChangeRecord(
                     path=normalize_path(segment[2:]),
@@ -142,7 +145,9 @@ def recover_git_state(start: Path) -> GitState:
         ) from exc
 
     branch = (
-        run_git(root, "branch", "--show-current").decode("utf-8", "strict").strip()
+        run_git(root, "branch", "--show-current")
+        .decode("utf-8", "strict")
+        .strip()
         or "(detached)"
     )
     changes = parse_porcelain_v2(run_git(root, *PORCELAIN_V2_ARGS))
