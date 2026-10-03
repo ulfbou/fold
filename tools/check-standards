@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""Mechanically check Fold's declared repository text baseline subset."""
+from __future__ import annotations
+
+import ast
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+TEXT_SUFFIXES = frozenset({".json", ".md", ".py", ".toml", ".yaml", ".yml"})
+EXPLICIT_TEXT_PATHS = (ROOT / "tools" / "check-standards", ROOT / "tools" / "fold-changelog")
+LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+
+
+def fail(message: str) -> None:
+    print(f"ERROR: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def governed_text_paths() -> tuple[Path, ...]:
+    tracked = subprocess.check_output(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+    ).split(b"\0")
+    paths = {
+        ROOT / raw.decode("utf-8")
+        for raw in tracked
+        if raw
+        and (ROOT / raw.decode("utf-8")).is_file()
+        and (ROOT / raw.decode("utf-8")).suffix in TEXT_SUFFIXES
+    }
+    paths.update(path for path in EXPLICIT_TEXT_PATHS if path.is_file())
+    return tuple(sorted(paths))
+
+
+def check_text(path: Path) -> str:
+    data = path.read_bytes()
+    relative = path.relative_to(ROOT)
+    if not data.endswith(b"\n"):
+        fail(f"{relative} lacks a final LF")
+    if b"\r" in data:
+        fail(f"{relative} contains CR bytes")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        fail(f"{relative} is not UTF-8: {exc}")
+        raise AssertionError("unreachable")
+
+
+def check_python(path: Path, text: str) -> None:
+    relative = path.relative_to(ROOT)
+    for number, line in enumerate(text.splitlines(), start=1):
+        if len(line) > 100:
+            fail(f"{relative}:{number} exceeds 100 characters")
+    try:
+        tree = ast.parse(text, filename=str(relative))
+    except SyntaxError as exc:
+        fail(f"{relative} is not valid Python: {exc}")
+    statement_lines: dict[int, int] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.stmt):
+            statement_lines[node.lineno] = statement_lines.get(node.lineno, 0) + 1
+    repeated = [line for line, count in statement_lines.items() if count > 1]
+    if repeated:
+        fail(f"{relative}:{min(repeated)} has multiple statements on one line")
+
+
+def check_markdown(path: Path, text: str) -> None:
+    for target in LINK_PATTERN.findall(text):
+        if "://" in target or target.startswith("#"):
+            continue
+        destination = (path.parent / target.split("#", 1)[0]).resolve()
+        if not destination.exists():
+            fail(f"{path.relative_to(ROOT)} has broken link {target!r}")
+
+
+def main() -> int:
+    if (ROOT / "src" / "fold" / "rules.py").exists():
+        fail("src/fold/rules.py is M1B scope and must not exist in M1A")
+    paths = governed_text_paths()
+    for path in paths:
+        text = check_text(path)
+        if path.suffix == ".py" or path in EXPLICIT_TEXT_PATHS:
+            check_python(path, text)
+        if path.suffix == ".md":
+            check_markdown(path, text)
+    print("ok: repository text baseline and Markdown links pass")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
